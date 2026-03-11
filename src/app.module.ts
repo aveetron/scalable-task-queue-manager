@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { DatabaseModule } from './database/database.module';
+import { HealthModule } from './health/health.module';
 import { TaskProcessorModule } from './task-processor/task-processor.module';
 import { TasksModule } from './tasks/tasks.module';
 
@@ -8,6 +9,7 @@ import { TasksModule } from './tasks/tasks.module';
   imports: [
     ConfigModule.forRoot({ isGlobal: true, envFilePath: '.env' }),
     DatabaseModule,
+    HealthModule,
     TasksModule,
     TaskProcessorModule,
   ],
