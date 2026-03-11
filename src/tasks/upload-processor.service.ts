@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
 import * as fs from 'fs';
+import * as path from 'path';
 import * as readline from 'readline';
 import { TaskItemReqDto } from './dto/task-item-req.dto';
 import { TaskQueueService } from '../task-queue/task-queue.service';
@@ -70,10 +71,18 @@ export class UploadProcessorService {
         error: msg,
       });
     } finally {
+      const pathToDelete = path.normalize(tempFilePath);
       try {
-        fs.unlinkSync(tempFilePath);
-      } catch {
-        // ignore
+        if (fs.existsSync(pathToDelete)) {
+          fs.unlinkSync(pathToDelete);
+          this.logger.log(
+            `[Batch ${jobId}] Temp file removed: ${pathToDelete}`,
+          );
+        }
+      } catch (err) {
+        this.logger.warn(
+          `[Batch ${jobId}] Failed to delete temp file ${pathToDelete}: ${err instanceof Error ? err.message : err}. You can remove it manually.`,
+        );
       }
     }
   }

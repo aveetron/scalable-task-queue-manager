@@ -34,7 +34,7 @@ The system has four main parts: **API**, **queue (producer)**, **processor (cons
 
 - **Tasks module:** Accepts `POST /tasks` with a JSON array of `{ id, payload }`. Deduplicates by `id` within the request and publishes to RabbitMQ.
 - **Task queue (producer):** Connects to RabbitMQ, declares exchanges and queues (main, retry, DLQ), and publishes each task to the main queue.
-- **Task processor (consumer):** Consumes from the main and retry queues. For each message: checks DB for already-completed (200) to avoid duplicates, calls the mock API, then either acks, republishes to retry (500, &lt; 2 retries), or marks done in DB (200/400 or 500 after max retries). Uses `TASK_CONCURRENCY` (prefetch) for in-process parallelism.
+- **Task processor (consumer):** Consumes from the main and retry queues. For each message: checks DB for already-completed (200) to avoid duplicates, calls the mock API, then either acks, republishes to retry (500, &lt; 2 retries), or marks done in DB (200/400 or 500 after max retries). Uses runtime concurrency (prefetch) from `TASK_CONCURRENCY` env or from `?concurrency=N` on POST /tasks or POST /tasks/upload; the consumer syncs prefetch every few seconds so changes take effect without restart.
 - **PostgreSQL:** Stores task results (id, payload, statusCode, totalRetries) for idempotency and auditing. All workers share the same DB.
 - **RabbitMQ:** Main queue for new tasks, retry queue for 500s, DLQ for dead letters. Multiple app instances consume from the same queues; the broker distributes messages.
 
@@ -64,7 +64,7 @@ cp .env.example .env
 | Variable | Description |
 |----------|-------------|
 | `PORT` | HTTP server port (default 3000). |
-| `TASK_CONCURRENCY` | Max tasks processed in parallel per worker (e.g. 2). |
+| `TASK_CONCURRENCY` | Default max tasks processed in parallel per worker (e.g. 2). Can be overridden at runtime via `?concurrency=N` on POST /tasks or POST /tasks/upload. Max allowed is **machine CPU cores × 2**; if N exceeds that, the API returns 400 with an explanatory message. |
 | `WORKER_ID` | Optional; identifies this instance in logs when running multiple workers. |
 | `RABBITMQ_HOST`, `RABBITMQ_PORT`, `RABBITMQ_VHOST`, `RABBITMQ_DEFAULT_USER`, `RABBITMQ_DEFAULT_PASS` | RabbitMQ connection. |
 | `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` | PostgreSQL connection. |
@@ -109,11 +109,13 @@ make dev
 
 - **POST /tasks**  
   Body: JSON array of task objects: `{ "id": "task-1", "payload": { "type": "email", "to": "user@example.com" } }`.  
+  Optional query: `?concurrency=N` (1 to **machine cores × 2**) sets the consumer’s runtime prefetch. If N exceeds the max, the API returns 400 with an explanatory message. The value applies until the next request changes it or the process restarts. If omitted, env `TASK_CONCURRENCY` or the last set value is used.  
   Responds 200 on success. Max 10,000 tasks per request; for larger batches use `POST /tasks/upload`. Tasks are deduplicated by `id` within the request and published to the queue.
 
 - **POST /tasks/upload**  
   Body: Either a **single JSON array** of tasks (e.g. `[{ "id": "task-1", "payload": {...} }, ...]`, including pretty-printed) or **NDJSON** (one JSON object per line), e.g. `{"id":"task-1","payload":{...}}\n{"id":"task-2","payload":{...}}\n`.  
-  Responds **202 Accepted** with `{ "jobId": "<uuid>", "message": "Upload accepted. Processing in background." }`. The server streams the body to a temp file and processes it in the background in chunks (publishes to the queue without blocking the client). Use for 200k–2M tasks. JSON array format is loaded into memory (max 150MB); for larger files use NDJSON. Max body size configurable via `UPLOAD_MAX_BYTES` (default 1GB).
+  Optional query: `?concurrency=N` (1 to **machine cores × 2**) sets the consumer’s runtime prefetch; same behavior as POST /tasks. If N exceeds the max, returns 400.  
+  Responds **202 Accepted** with `{ "jobId": "<uuid>", "message": "Upload accepted. Processing in background." }`. The server streams the body to a temp file and processes it in the background in chunks (publishes to the queue without blocking the client). Use for 200k–2M tasks. JSON array format is loaded into memory (max 150MB); for larger files use NDJSON. Max body size configurable via `UPLOAD_MAX_BYTES` (default 1GB). **Temp files are deleted automatically after processing.** If the server is stopped during processing, leftover `upload-*.ndjson` files in the upload temp dir (see `UPLOAD_TEMP_DIR`; default is the OS temp dir) can be safely deleted manually.
 
 - **GET /tasks/jobs/:id**  
   Returns the status of an upload job: `{ "jobId": "<id>", "status": "processing" | "completed" | "failed", "totalTasks": <n>, "error": "<message>" }`.
