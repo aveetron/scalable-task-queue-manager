@@ -1,0 +1,22 @@
+import {
+  IsNotEmpty,
+  IsObject,
+  IsString,
+  MaxLength,
+  MinLength,
+} from 'class-validator';
+
+/**
+ * Single task item: id + flexible JSON payload (e.g. type, to, userId as in the spec).
+ */
+export class TaskItemReqDto {
+  @IsString()
+  @IsNotEmpty({ message: 'Task id is required' })
+  @MinLength(1, { message: 'Task id must not be empty' })
+  @MaxLength(255, { message: 'Task id must be at most 255 characters' })
+  id: string;
+
+  @IsObject({ message: 'Payload must be a valid JSON object' })
+  @IsNotEmpty({ message: 'Payload is required' })
+  payload: Record<string, unknown>;
+}
