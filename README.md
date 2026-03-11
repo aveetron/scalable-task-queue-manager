@@ -13,6 +13,8 @@ A NestJS application that processes tasks via a queue: clients submit tasks (JSO
 - [Prerequisites & setup](#prerequisites--setup)
 - [Configuration](#configuration)
 - [Run locally](#run-locally)
+- [Swagger](#swagger)
+- [Rate limiting](#rate-limiting)
 - [API reference](#api-reference)
 - [Deployment guidelines](#deployment-guidelines)
 - [Scripts](#scripts)
@@ -138,6 +140,7 @@ cp .env.example .env
 | Variable | Description |
 |----------|-------------|
 | `PORT` | HTTP server port (default 3000). |
+| `THROTTLE_TTL_MS`, `THROTTLE_LIMIT` | Rate limit: `THROTTLE_LIMIT` requests per `THROTTLE_TTL_MS` ms per IP (default 100 per 60000 ms). Returns 429 when exceeded. |
 | `TASK_CONCURRENCY` | Default max tasks processed in parallel per worker. Can be overridden at runtime via `?concurrency=N` on POST /tasks or POST /tasks/upload. Max = **machine CPU cores × 2**; higher values return 400. |
 | `WORKER_ID` | Optional; identifies this instance in logs when running multiple workers. |
 | `RABBITMQ_HOST`, `RABBITMQ_PORT`, `RABBITMQ_VHOST`, `RABBITMQ_DEFAULT_USER`, `RABBITMQ_DEFAULT_PASS` | RabbitMQ connection. |
@@ -175,6 +178,14 @@ yarn build && yarn start:prod
 
 The app connects to RabbitMQ and PostgreSQL, creates queues/exchanges if needed, and starts consuming. Submit tasks via **POST /tasks** (small) or **POST /tasks/upload** (large); see [API reference](#api-reference).
 
+### Swagger
+
+Interactive API documentation (OpenAPI/Swagger) is available at **GET /api** (Swagger UI). After starting the server, open `http://localhost:3000/api` (or your `PORT`). The server also logs the URL on startup (e.g. `Swagger UI: http://0.0.0.0:3000/api`). You can try all endpoints from the UI, including request body examples; response schemas and possible status codes (200, 202, 400, 429, 503, etc.) are documented there.
+
+### Rate limiting
+
+All API routes are rate-limited per IP using **Throttler**. When the limit is exceeded, the server responds with **429 Too Many Requests**. Limits are configured via `THROTTLE_TTL_MS` and `THROTTLE_LIMIT` (see [Configuration](#configuration)); default is 100 requests per 60 seconds per IP.
+
 ---
 
 ## API reference
@@ -183,13 +194,13 @@ The app connects to RabbitMQ and PostgreSQL, creates queues/exchanges if needed,
 
 - **Body:** JSON array of task objects, e.g. `[{ "id": "task-1", "payload": { "type": "email", "to": "user@example.com" } }]`.
 - **Query:** Optional `?concurrency=N` (1 to machine cores × 2) to set consumer prefetch.
-- **Response:** **200** on success. Max **10,000** tasks per request; for larger batches use **POST /tasks/upload**. Tasks are deduplicated by `id` within the request and published to the queue.
+- **Response:** **200** on success. Max **10,000** tasks per request; for larger batches use **POST /tasks/upload**. Tasks are deduplicated by `id` within the request and published to the queue. **429** when rate limit is exceeded.
 
 ### POST /tasks/upload (large batches)
 
 - **Body:** Either a **single JSON array** (including pretty-printed) or **NDJSON** (one JSON object per line). Streamed to a temp file; processed in the background.
 - **Query:** Optional `?concurrency=N` (1 to machine cores × 2).
-- **Response:** **202 Accepted** with `{ "jobId": "<uuid>", "message": "Upload accepted. Processing in background." }`. Temp files are deleted after processing. Leftover files in the upload temp dir (see `UPLOAD_TEMP_DIR`) can be safely deleted if the server was stopped during processing.
+- **Response:** **202 Accepted** with `{ "jobId": "<uuid>", "message": "Upload accepted. Processing in background." }`. Temp files are deleted after processing. Leftover files in the upload temp dir (see `UPLOAD_TEMP_DIR`) can be safely deleted if the server was stopped during processing. **429** when rate limit is exceeded.
 
 ### GET /tasks/jobs/:id
 

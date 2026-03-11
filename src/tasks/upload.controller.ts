@@ -10,6 +10,15 @@ import {
   Query,
   Req,
 } from '@nestjs/common';
+import {
+  ApiBody,
+  ApiOperation,
+  ApiParam,
+  ApiQuery,
+  ApiResponse,
+  ApiTags,
+} from '@nestjs/swagger';
+import { TaskItemReqDto } from './dto/task-item-req.dto';
 import { Request } from 'express';
 import { ConcurrencyConfigService } from '../concurrency/concurrency-config.service';
 import { UploadProcessorService } from './upload-processor.service';
@@ -20,6 +29,7 @@ interface RequestWithUpload extends Request {
   uploadJobId?: string;
 }
 
+@ApiTags('tasks/upload')
 @Controller('tasks')
 export class UploadController {
   private readonly logger = new Logger(UploadController.name);
@@ -37,6 +47,44 @@ export class UploadController {
    */
   @Post('upload')
   @HttpCode(HttpStatus.ACCEPTED)
+  @ApiOperation({
+    summary: 'Upload tasks (large batch)',
+    description:
+      'Streams request body to a temp file and returns 202 with jobId. Body: NDJSON (one JSON object per line) or a single JSON array. Processing runs in background. Optional concurrency sets consumer prefetch.',
+  })
+  @ApiBody({
+    description:
+      'JSON array of tasks (same shape as POST /tasks). Alternatively send NDJSON (one JSON object per line). Use the example below for "Try it out".',
+    type: [TaskItemReqDto],
+    examples: {
+      'JSON array': {
+        summary: 'JSON array',
+        value: [
+          { id: 'task-1', payload: { type: 'email', to: 'user1@example.com' } },
+          { id: 'task-2', payload: { type: 'sms', to: '+1234567890' } },
+        ],
+      },
+    },
+  })
+  @ApiQuery({
+    name: 'concurrency',
+    required: false,
+    description: 'Runtime concurrency (prefetch). 1 to machine cores × 2.',
+  })
+  @ApiResponse({
+    status: 202,
+    description: 'Upload accepted; processing in background',
+    schema: {
+      type: 'object',
+      properties: { jobId: { type: 'string' }, message: { type: 'string' } },
+    },
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Invalid concurrency or middleware not run',
+  })
+  @ApiResponse({ status: 413, description: 'Payload too large' })
+  @ApiResponse({ status: 429, description: 'Too many requests (rate limit)' })
   upload(
     @Req() req: RequestWithUpload,
     @Query('concurrency') concurrency?: string | string[],
@@ -141,6 +189,28 @@ export class UploadController {
    * Get status of an upload job.
    */
   @Get('jobs/:id')
+  @ApiOperation({
+    summary: 'Get upload job status',
+    description:
+      'Returns processing status for a jobId from POST /tasks/upload.',
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'Job ID (UUID) returned from POST /tasks/upload',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Job status',
+    schema: {
+      type: 'object',
+      properties: {
+        jobId: { type: 'string' },
+        status: { type: 'string', enum: ['processing', 'completed', 'failed'] },
+        totalTasks: { type: 'number' },
+        error: { type: 'string' },
+      },
+    },
+  })
   getJobStatus(@Param('id') id: string): {
     jobId: string;
     status?: string;

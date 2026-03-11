@@ -9,6 +9,7 @@ import {
   Query,
   Req,
 } from '@nestjs/common';
+import { ApiBody, ApiOperation, ApiQuery, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { Request } from 'express';
 import { TaskItemResDto } from './dto/task-item-res.dto';
 import { TaskItemReqDto } from './dto/task-item-req.dto';
@@ -16,6 +17,7 @@ import { ValidateTasksArrayPipe } from './pipes/validate-tasks-array.pipe';
 import { TasksService } from './tasks.service';
 import { ConcurrencyConfigService } from '../concurrency/concurrency-config.service';
 
+@ApiTags('tasks')
 @Controller('tasks')
 export class TasksController {
   private readonly logger = new Logger(TasksController.name);
@@ -32,6 +34,23 @@ export class TasksController {
    */
   @Post('/')
   @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Submit tasks (small batch)',
+    description:
+      'Accepts a JSON array of tasks (max 10,000). Deduplicates by id and publishes to the queue. Optional concurrency sets consumer prefetch (1 to machine cores × 2).',
+  })
+  @ApiBody({
+    type: [TaskItemReqDto],
+    description: 'JSON array of task objects with id and payload',
+  })
+  @ApiQuery({
+    name: 'concurrency',
+    required: false,
+    description: 'Runtime concurrency (prefetch). 1 to machine cores × 2.',
+  })
+  @ApiResponse({ status: 200, description: 'Tasks accepted', type: TaskItemResDto })
+  @ApiResponse({ status: 400, description: 'Invalid body or concurrency' })
+  @ApiResponse({ status: 429, description: 'Too many requests (rate limit)' })
   public async submit(
     @Req() req: Request,
     @Body(ValidateTasksArrayPipe) tasks: TaskItemReqDto[],
