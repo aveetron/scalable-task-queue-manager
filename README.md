@@ -106,7 +106,14 @@ make dev
 
 - **POST /tasks**  
   Body: JSON array of task objects: `{ "id": "task-1", "payload": { "type": "email", "to": "user@example.com" } }`.  
-  Responds 200 on success. Tasks are deduplicated by `id` within the request and published to the queue.
+  Responds 200 on success. Max 10,000 tasks per request; for larger batches use `POST /tasks/upload`. Tasks are deduplicated by `id` within the request and published to the queue.
+
+- **POST /tasks/upload**  
+  Body: Either a **single JSON array** of tasks (e.g. `[{ "id": "task-1", "payload": {...} }, ...]`, including pretty-printed) or **NDJSON** (one JSON object per line), e.g. `{"id":"task-1","payload":{...}}\n{"id":"task-2","payload":{...}}\n`.  
+  Responds **202 Accepted** with `{ "jobId": "<uuid>", "message": "Upload accepted. Processing in background." }`. The server streams the body to a temp file and processes it in the background in chunks (publishes to the queue without blocking the client). Use for 200k–2M tasks. JSON array format is loaded into memory (max 150MB); for larger files use NDJSON. Max body size configurable via `UPLOAD_MAX_BYTES` (default 1GB).
+
+- **GET /tasks/jobs/:id**  
+  Returns the status of an upload job: `{ "jobId": "<id>", "status": "processing" | "completed" | "failed", "totalTasks": <n>, "error": "<message>" }`.
 
 - **GET /health**  
   Returns 200 and `{ "status": "ok" }` if the app can reach PostgreSQL; otherwise 503.

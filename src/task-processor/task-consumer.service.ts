@@ -167,12 +167,11 @@ export class TaskConsumerService implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
-      const alreadyCompleted = await this.taskRepo.findOne({
-        where: { id: request.id, statusCode: 200 },
-      });
-      if (alreadyCompleted) {
+      // Skip if this task was already processed (any status: 200, 400, or 500) to avoid duplicate work on re-upload.
+      const existingTask = await this.taskRepo.findOneBy({ id: request.id });
+      if (existingTask != null) {
         this.logger.log(
-          `${this.logPrefix()}❌ Task "${request.id}" skipped (duplicate, already completed).`,
+          `${this.logPrefix()}❌ Task "${request.id}" skipped (duplicate, already processed).`,
         );
         this.channel.ack(msg);
         return;
@@ -187,6 +186,7 @@ export class TaskConsumerService implements OnModuleInit, OnModuleDestroy {
       const response = await this.mockApi.getResponse(request);
 
       if (response.code === 200) {
+        // as this is already successful, we can save the result and ack the message
         await this.saveResult(this.buildResultDto(request, 200, retryCount));
         this.logger.log(
           `${this.logPrefix()}✅ Task "${request.id}" completed successfully.`,
@@ -196,7 +196,9 @@ export class TaskConsumerService implements OnModuleInit, OnModuleDestroy {
       }
 
       if (response.code === 400) {
+        // 400: never retry. Save result, ack and skip (no publish to retry queue).
         await this.saveResult(this.buildResultDto(request, 400, retryCount));
+
         this.logger.log(
           `${this.logPrefix()}❌ Task "${request.id}" could not be processed (invalid data). Skipped.`,
         );
@@ -204,9 +206,9 @@ export class TaskConsumerService implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
-      // 500: retry up to MAX_RETRIES for 200; if still not 200 after retries, treat as 400 and ack (no DLQ)
+      // 500: retry up to MAX_RETRIES (2) for 200; if still not 200 after 2 retries, save status 400 and totalRetries 2, ack (no DLQ)
       if (retryCount >= MAX_RETRIES) {
-        await this.saveResult(this.buildResultDto(request, 400, retryCount));
+        await this.saveResult(this.buildResultDto(request, 400, MAX_RETRIES));
         this.logger.log(
           `${this.logPrefix()}❌ Task "${request.id}" failed after ${MAX_RETRIES} retries. Marked as failed (no further retries).`,
         );
@@ -214,7 +216,7 @@ export class TaskConsumerService implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
-      await this.saveResult(this.buildResultDto(request, 500, retryCount + 1));
+      // Do not persist 500; only 200 or 400 are final. Publish to retry queue for next attempt.
       this.channel.publish('', TASK_RETRY_QUEUE, msg.content, {
         persistent: true,
         headers: {
