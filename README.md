@@ -29,6 +29,9 @@ The system has four main parts: **API**, **queue (producer)**, **processor (cons
                     └─────────────────┘   └─────────────┘    └─────────────────┘
 ```
 
+/tasks/upload architecture:
+![](architecture/archi.png)
+
 - **Tasks module:** Accepts `POST /tasks` with a JSON array of `{ id, payload }`. Deduplicates by `id` within the request and publishes to RabbitMQ.
 - **Task queue (producer):** Connects to RabbitMQ, declares exchanges and queues (main, retry, DLQ), and publishes each task to the main queue.
 - **Task processor (consumer):** Consumes from the main and retry queues. For each message: checks DB for already-completed (200) to avoid duplicates, calls the mock API, then either acks, republishes to retry (500, &lt; 2 retries), or marks done in DB (200/400 or 500 after max retries). Uses `TASK_CONCURRENCY` (prefetch) for in-process parallelism.
