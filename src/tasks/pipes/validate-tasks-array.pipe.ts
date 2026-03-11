@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   Injectable,
+  Logger,
   PayloadTooLargeException,
   PipeTransform,
 } from '@nestjs/common';
@@ -20,6 +21,8 @@ export class ValidateTasksArrayPipe implements PipeTransform<
   unknown,
   Promise<TaskItemReqDto[]>
 > {
+  private readonly logger = new Logger(ValidateTasksArrayPipe.name);
+
   async transform(value: unknown): Promise<TaskItemReqDto[]> {
     // #region agent log
     fetch('http://127.0.0.1:7371/ingest/e6a15b32-9a21-4a30-acf2-f92bcc1033d6', {
@@ -70,14 +73,21 @@ export class ValidateTasksArrayPipe implements PipeTransform<
             : typeof value === 'object'
               ? `object with keys: ${Object.keys(value).join(', ') || '(none)'}`
               : typeof value;
+      this.logger.warn(
+        `Payload data error: body is not a JSON array of tasks. Received: ${received}`,
+      );
       throw new BadRequestException(
         `Request body must be a JSON array of tasks. Received: ${received}`,
       );
     }
     if (array.length === 0) {
+      this.logger.warn('Payload data error: at least one task is required.');
       throw new BadRequestException('At least one task is required');
     }
     if (array.length > MAX_BATCH_SIZE) {
+      this.logger.warn(
+        `Payload data error: batch size exceeds ${MAX_BATCH_SIZE}.`,
+      );
       throw new PayloadTooLargeException(
         `Batch size exceeds ${MAX_BATCH_SIZE}. Use POST /tasks/upload with NDJSON for large batches (200k–2M).`,
       );
@@ -92,6 +102,9 @@ export class ValidateTasksArrayPipe implements PipeTransform<
         const messages = errors
           .map((e) => Object.values(e.constraints ?? {}).join(', '))
           .join('; ');
+        this.logger.warn(
+          `Payload data error: task at index ${i} does not match schema. ${messages}`,
+        );
         throw new BadRequestException(`Task at index ${i}: ${messages}`);
       }
       results.push(item);

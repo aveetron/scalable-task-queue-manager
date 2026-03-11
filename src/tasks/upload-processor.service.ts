@@ -125,8 +125,16 @@ export class UploadProcessorService {
       `[Batch ${jobId}] Detected JSON array format (${(stat.size / 1024 / 1024).toFixed(1)}MB). Parsing...`,
     );
     const content = await fs.promises.readFile(tempFilePath, 'utf8');
-    const raw = JSON.parse(content) as unknown;
+    let raw: unknown;
+    try {
+      raw = JSON.parse(content) as unknown;
+    } catch (parseErr) {
+      const msg = parseErr instanceof Error ? parseErr.message : String(parseErr);
+      this.logger.warn(`[Batch ${jobId}] Payload data error: invalid JSON. ${msg}`);
+      throw new Error(`Invalid JSON: ${msg}`);
+    }
     if (!Array.isArray(raw)) {
+      this.logger.warn(`[Batch ${jobId}] Payload data error: expected JSON array at root, got ${typeof raw}.`);
       throw new Error('Expected a JSON array at root. Got: ' + typeof raw);
     }
     let totalEnqueued = 0;
@@ -171,7 +179,7 @@ export class UploadProcessorService {
               )
               .join('; ');
             this.logger.warn(
-              `[Batch ${jobId}] Validation failed (item ${i + 1}): ${msg}`,
+              `[Batch ${jobId}] Payload data error (item ${i + 1}): schema mismatch. ${msg}`,
             );
             loggedFailures++;
           }
@@ -188,7 +196,7 @@ export class UploadProcessorService {
           const msg =
             parseErr instanceof Error ? parseErr.message : String(parseErr);
           this.logger.warn(
-            `[Batch ${jobId}] Parse/validation error (item ${i + 1}): ${msg}`,
+            `[Batch ${jobId}] Payload data error (item ${i + 1}): ${msg}`,
           );
           loggedFailures++;
         }
@@ -277,7 +285,7 @@ export class UploadProcessorService {
                 )
                 .join('; ');
               this.logger.warn(
-                `[Batch ${jobId}] Validation failed (line ${lineCount}): ${msg}. Sample: ${trimmed.slice(0, 120)}...`,
+                `[Batch ${jobId}] Payload data error (line ${lineCount}): schema mismatch. ${msg}. Sample: ${trimmed.slice(0, 120)}...`,
               );
               loggedFailures++;
             }
@@ -295,7 +303,7 @@ export class UploadProcessorService {
           const msg =
             parseErr instanceof Error ? parseErr.message : String(parseErr);
           this.logger.warn(
-            `[Batch ${jobId}] Parse error (line ${lineCount}): ${msg}. Sample: ${trimmed.slice(0, 120)}...`,
+            `[Batch ${jobId}] Payload data error (line ${lineCount}): ${msg}. Sample: ${trimmed.slice(0, 120)}...`,
           );
           loggedFailures++;
         }

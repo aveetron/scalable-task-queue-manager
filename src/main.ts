@@ -1,5 +1,6 @@
 import { ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
+import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from './app.module';
 import express from 'express';
 import * as expressNs from 'express';
@@ -109,10 +110,25 @@ async function bootstrap() {
       transform: true,
     }),
   );
+
+  const config = new DocumentBuilder()
+    .setTitle('Task Queue Management System')
+    .setDescription(
+      'Submit tasks (JSON payloads); a mock API returns 200/400/500. Supports retries, persistence, and configurable concurrency. Two APIs: POST /tasks (small batches) and POST /tasks/upload (large batches).',
+    )
+    .setVersion('1.0')
+    .addTag('tasks', 'Small-batch task submission (JSON array, max 10k tasks)')
+    .addTag('tasks/upload', 'Large-batch upload (streamed body, 202 + background processing)')
+    .addTag('health', 'Health check')
+    .build();
+  const document = SwaggerModule.createDocument(app, config);
+  SwaggerModule.setup('api', app, document);
+
   const port = process.env.PORT || 3000;
   const host = process.env.HOST ?? '0.0.0.0';
   await app.listen(port, host, () => {
     console.log(`Server is running on http://${host}:${port}`);
+    console.log(`Swagger UI: http://${host}:${port}/api`);
   });
 }
 bootstrap();
