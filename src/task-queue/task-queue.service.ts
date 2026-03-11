@@ -9,6 +9,10 @@ import {
   TASK_ROUTING_KEY,
 } from '../config/rabbitmq.config';
 
+const RECONNECT_INITIAL_MS = 1000;
+const RECONNECT_MAX_MS = 30000;
+const RECONNECT_MAX_ATTEMPTS = 60;
+
 export interface TaskMessage {
   id: string;
   payload: Record<string, unknown>;
@@ -18,10 +22,24 @@ export interface TaskMessage {
 export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
   private connection: amqp.ChannelModel | null = null;
   private channel: amqp.Channel | null = null;
+  private reconnecting = false;
+  private destroyed = false;
+  private connectionErrorHandler = (): void => {
+    void this.handleDisconnect();
+  };
+  private connectionCloseHandler = (): void => {
+    void this.handleDisconnect();
+  };
 
   async onModuleInit(): Promise<void> {
+    await this.connectAndSetup();
+  }
+
+  private async connectAndSetup(): Promise<void> {
     const url = getRabbitMQConnectionUrl();
     this.connection = await amqp.connect(url);
+    this.connection.on('error', this.connectionErrorHandler);
+    this.connection.on('close', this.connectionCloseHandler);
     this.channel = await this.connection.createChannel();
 
     // Exchanges
@@ -64,12 +82,39 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
     );
   }
 
+  private async handleDisconnect(): Promise<void> {
+    if (this.destroyed || this.reconnecting) return;
+    this.reconnecting = true;
+    this.channel = null;
+    if (this.connection) {
+      this.connection.removeListener('error', this.connectionErrorHandler);
+      this.connection.removeListener('close', this.connectionCloseHandler);
+      this.connection = null;
+    }
+    let delayMs = RECONNECT_INITIAL_MS;
+    for (let attempt = 0; attempt < RECONNECT_MAX_ATTEMPTS; attempt++) {
+      if (this.destroyed) return;
+      await new Promise((r) => setTimeout(r, delayMs));
+      try {
+        await this.connectAndSetup();
+        this.reconnecting = false;
+        return;
+      } catch {
+        delayMs = Math.min(RECONNECT_MAX_MS, delayMs * 2);
+      }
+    }
+    this.reconnecting = false;
+  }
+
   async onModuleDestroy(): Promise<void> {
+    this.destroyed = true;
     if (this.channel) {
       await this.channel.close();
       this.channel = null;
     }
     if (this.connection) {
+      this.connection.removeListener('error', this.connectionErrorHandler);
+      this.connection.removeListener('close', this.connectionCloseHandler);
       await this.connection.close();
       this.connection = null;
     }
