@@ -1,5 +1,7 @@
 # Task Queue Management System
 
+
+
 A NestJS application that processes tasks via a queue: clients submit tasks (JSON payloads), a mock API returns 200/400/500, and the system handles retries (500, up to 2 retries), persistence in PostgreSQL, and optional scaling with multiple workers.
 
 ---
@@ -76,20 +78,15 @@ cp .env.example .env
 **1. Start RabbitMQ and PostgreSQL (e.g. with Docker Compose):**
 
 ```bash
-docker compose up -d rabbitmq postgres
+docker compose up -d
 ```
 
-**2. Run migrations:**
+**2. Run migrations & start project:**
 
 ```bash
-yarn migration:run
+make dev
 ```
 
-**3. Start the application:**
-
-```bash
-# Development (watch mode)
-yarn start:dev
 
 # Or production build then run
 yarn build && yarn start:prod
