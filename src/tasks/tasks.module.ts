@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { ConcurrencyModule } from '../concurrency/concurrency.module';
 import { DatabaseModule } from '../database/database.module';
 import { TaskQueueModule } from '../task-queue/task-queue.module';
 import { Task } from './entities/task.entity';
@@ -10,7 +11,12 @@ import { UploadJobStore } from './upload-job.store';
 import { UploadProcessorService } from './upload-processor.service';
 
 @Module({
-  imports: [DatabaseModule, TypeOrmModule.forFeature([Task]), TaskQueueModule],
+  imports: [
+    ConcurrencyModule,
+    DatabaseModule,
+    TypeOrmModule.forFeature([Task]),
+    TaskQueueModule,
+  ],
   controllers: [TasksController, UploadController],
   providers: [TasksService, UploadJobStore, UploadProcessorService],
 })

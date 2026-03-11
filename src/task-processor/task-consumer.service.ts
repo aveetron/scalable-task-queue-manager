@@ -15,6 +15,7 @@ import {
   TASK_DLQ_ROUTING_KEY,
   TASK_RETRY_QUEUE,
 } from '../config/rabbitmq.config';
+import { ConcurrencyConfigService } from '../concurrency/concurrency-config.service';
 import { Task } from '../tasks/entities/task.entity';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
@@ -27,6 +28,7 @@ const MAX_RETRIES = 2;
 const RECONNECT_INITIAL_MS = 1000;
 const RECONNECT_MAX_MS = 30000;
 const RECONNECT_MAX_ATTEMPTS = 60;
+const PREFETCH_SYNC_INTERVAL_MS = 3000;
 
 @Injectable()
 export class TaskConsumerService implements OnModuleInit, OnModuleDestroy {
@@ -35,25 +37,20 @@ export class TaskConsumerService implements OnModuleInit, OnModuleDestroy {
   private channel: amqp.Channel | null = null;
   private mainConsumerTag: string | null = null;
   private retryConsumerTag: string | null = null;
-  private readonly concurrency: number;
+  private currentPrefetch = 0;
   private inFlight = 0;
   private readonly workerId: string;
   private reconnecting = false;
   private destroyed = false;
+  private prefetchSyncInterval: ReturnType<typeof setInterval> | null = null;
   private connectionErrorHandler = (): void => void this.handleDisconnect();
   private connectionCloseHandler = (): void => void this.handleDisconnect();
 
   constructor(
     private readonly mockApi: MockApiService,
+    private readonly concurrencyConfig: ConcurrencyConfigService,
     @InjectRepository(Task) private readonly taskRepo: Repository<Task>,
   ) {
-    this.concurrency = Math.max(
-      1,
-      parseInt(
-        process.env.TASK_CONCURRENCY ?? process.env.CONCURRENCY ?? '2',
-        10,
-      ),
-    );
     this.workerId =
       process.env.WORKER_ID ?? os.hostname() ?? `worker-${process.pid}`;
   }
@@ -62,8 +59,19 @@ export class TaskConsumerService implements OnModuleInit, OnModuleDestroy {
     return `[${this.workerId}] `;
   }
 
+  /** Log slug for concurrency visibility: e.g. [concurrency: 2/5] (active/max). */
+  private concurrencySlug(afterFinish = false): string {
+    const active = afterFinish ? Math.max(0, this.inFlight - 1) : this.inFlight;
+    const max = this.currentPrefetch || this.concurrencyConfig.getConcurrency();
+    return `[concurrency: ${active}/${max}]`;
+  }
+
   async onModuleInit(): Promise<void> {
     await this.connectAndConsume();
+    this.prefetchSyncInterval = setInterval(
+      () => void this.syncPrefetchFromConfig(),
+      PREFETCH_SYNC_INTERVAL_MS,
+    );
   }
 
   private async connectAndConsume(): Promise<void> {
@@ -80,9 +88,11 @@ export class TaskConsumerService implements OnModuleInit, OnModuleDestroy {
       TASK_RETRY_QUEUE,
       rabbitMQQueues.retry.options,
     );
-    await this.channel.prefetch(this.concurrency);
+    const concurrency = this.concurrencyConfig.getConcurrency();
+    await this.channel.prefetch(concurrency);
+    this.currentPrefetch = concurrency;
     this.logger.log(
-      `${this.logPrefix()}Task processor ready. Processing up to ${this.concurrency} tasks at a time.`,
+      `${this.logPrefix()}Task processor ready. Processing up to ${concurrency} tasks at a time.`,
     );
 
     const main = await this.channel.consume(rabbitMQQueues.main.name, (msg) =>
@@ -93,6 +103,39 @@ export class TaskConsumerService implements OnModuleInit, OnModuleDestroy {
       this.handleMessage(msg, true),
     );
     this.retryConsumerTag = retry.consumerTag;
+  }
+
+  private async syncPrefetchFromConfig(): Promise<void> {
+    if (this.destroyed || !this.channel) return;
+    const wanted = this.concurrencyConfig.getConcurrency();
+    if (wanted !== this.currentPrefetch) {
+      const previous = this.currentPrefetch;
+      await this.channel.prefetch(wanted);
+      this.currentPrefetch = wanted;
+      this.logger.log(
+        `${this.logPrefix()}Prefetch updated to ${wanted} (runtime concurrency).`,
+      );
+      // #region agent log
+      fetch(
+        'http://127.0.0.1:7371/ingest/e6a15b32-9a21-4a30-acf2-f92bcc1033d6',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Debug-Session-Id': '4a760a',
+          },
+          body: JSON.stringify({
+            sessionId: '4a760a',
+            hypothesisId: 'prefetchUpdated',
+            location: 'task-consumer.service.ts:syncPrefetchFromConfig',
+            message: 'Prefetch updated from config',
+            data: { wanted, previous },
+            timestamp: Date.now(),
+          }),
+        },
+      ).catch(() => {});
+      // #endregion
+    }
   }
 
   private async handleDisconnect(): Promise<void> {
@@ -130,6 +173,10 @@ export class TaskConsumerService implements OnModuleInit, OnModuleDestroy {
 
   async onModuleDestroy(): Promise<void> {
     this.destroyed = true;
+    if (this.prefetchSyncInterval != null) {
+      clearInterval(this.prefetchSyncInterval);
+      this.prefetchSyncInterval = null;
+    }
     if (this.channel) {
       if (this.mainConsumerTag) await this.channel.cancel(this.mainConsumerTag);
       if (this.retryConsumerTag)
@@ -180,7 +227,7 @@ export class TaskConsumerService implements OnModuleInit, OnModuleDestroy {
       this.inFlight++;
       const context = fromRetry ? ` (retry attempt ${retryCount})` : '';
       this.logger.log(
-        `${this.logPrefix()}Processing task "${request.id}"${context} … (${this.inFlight} running)`,
+        `${this.logPrefix()}Processing task "${request.id}"${context} … ${this.concurrencySlug()}`,
       );
 
       const response = await this.mockApi.getResponse(request);
@@ -189,7 +236,7 @@ export class TaskConsumerService implements OnModuleInit, OnModuleDestroy {
         // as this is already successful, we can save the result and ack the message
         await this.saveResult(this.buildResultDto(request, 200, retryCount));
         this.logger.log(
-          `${this.logPrefix()}✅ Task "${request.id}" completed successfully.`,
+          `${this.logPrefix()}✅ Task "${request.id}" completed successfully. ${this.concurrencySlug(true)}`,
         );
         this.channel.ack(msg);
         return;
@@ -200,7 +247,7 @@ export class TaskConsumerService implements OnModuleInit, OnModuleDestroy {
         await this.saveResult(this.buildResultDto(request, 400, retryCount));
 
         this.logger.log(
-          `${this.logPrefix()}❌ Task "${request.id}" could not be processed (invalid data). Skipped.`,
+          `${this.logPrefix()}❌ Task "${request.id}" could not be processed (invalid data). Skipped. ${this.concurrencySlug(true)}`,
         );
         this.channel.ack(msg);
         return;
@@ -210,7 +257,7 @@ export class TaskConsumerService implements OnModuleInit, OnModuleDestroy {
       if (retryCount >= MAX_RETRIES) {
         await this.saveResult(this.buildResultDto(request, 400, MAX_RETRIES));
         this.logger.log(
-          `${this.logPrefix()}❌ Task "${request.id}" failed after ${MAX_RETRIES} retries. Marked as failed (no further retries).`,
+          `${this.logPrefix()}❌ Task "${request.id}" failed after ${MAX_RETRIES} retries. Marked as failed (no further retries). ${this.concurrencySlug(true)}`,
         );
         this.channel.ack(msg);
         return;
@@ -225,13 +272,13 @@ export class TaskConsumerService implements OnModuleInit, OnModuleDestroy {
         },
       });
       this.logger.log(
-        `${this.logPrefix()}Task "${request.id}" failed temporarily. Will retry (attempt ${retryCount + 1} of ${MAX_RETRIES}).`,
+        `${this.logPrefix()}Task "${request.id}" failed temporarily. Will retry (attempt ${retryCount + 1} of ${MAX_RETRIES}). ${this.concurrencySlug(true)}`,
       );
       this.channel.ack(msg);
     } catch (err) {
       const taskId = request?.id ?? this.tryGetTaskIdFromMessage(msg.content);
       this.logger.warn(
-        `${this.logPrefix()}❌ Task "${taskId}" could not be processed: ${err}`,
+        `${this.logPrefix()}❌ Task "${taskId}" could not be processed: ${err} ${this.concurrencySlug(true)}`,
       );
       this.channel.nack(msg, false, false);
     } finally {
